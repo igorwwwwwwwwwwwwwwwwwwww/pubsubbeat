@@ -37,6 +37,7 @@ import (
 
 type Pubsubbeat struct {
 	done         chan struct{}
+	events       chan ackableEvent
 	config       *config.Config
 	client       beat.Client
 	pubsubClient *pubsub.Client
@@ -78,6 +79,7 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 
 	bt := &Pubsubbeat{
 		done:         make(chan struct{}),
+		events:       make(chan ackableEvent, 512),
 		config:       config,
 		pubsubClient: client,
 		subscription: subscription,
@@ -105,41 +107,10 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 		bt.pubsubClient.Close()
 	}()
 
-	events := make(chan ackableEvent)
-
 	go func() {
-		// Batch up documents to prevent contending on lock in client.Publish()
-
-		batchMaxSize := 512
-		batchMaxTime := 1 * time.Second
-
-		t := time.Tick(batchMaxTime)
-		batch := make([]beat.Event, 0, batchMaxSize)
-		batchAcks := make([]*pubsub.Message, 0, batchMaxSize)
-
-		for {
-			select {
-			case <-bt.done:
-				return
-			case ae := <-events:
-				batch = append(batch, ae.event)
-				batchAcks = append(batchAcks, ae.message)
-				if len(batch) == batchMaxSize {
-					bt.client.PublishAll(batch)
-					for _, a := range batchAcks {
-						a.Ack()
-					}
-					batch = make([]beat.Event, 0, batchMaxSize)
-					batchAcks = make([]*pubsub.Message, 0, batchMaxSize)
-				}
-			case <-t:
-				bt.client.PublishAll(batch)
-				for _, a := range batchAcks {
-					a.Ack()
-				}
-				batch = make([]beat.Event, 0, batchMaxSize)
-				batchAcks = make([]*pubsub.Message, 0, batchMaxSize)
-			}
+		for ae := range bt.events {
+			bt.client.Publish(ae.event)
+			ae.message.Ack()
 		}
 	}()
 
@@ -205,7 +176,7 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 
 		select {
 		case <-bt.done:
-		case events <- ae:
+		case bt.events <- ae:
 		}
 	})
 
@@ -219,6 +190,7 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 func (bt *Pubsubbeat) Stop() {
 	bt.client.Close()
 	close(bt.done)
+	close(bt.events)
 }
 
 func createPubsubClient(config *config.Config) (*pubsub.Client, error) {

@@ -108,9 +108,14 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 	}()
 
 	go func() {
-		for ae := range bt.events {
-			bt.client.Publish(ae.event)
-			ae.message.Ack()
+		for {
+			select {
+			case <-bt.done:
+				return
+			case ae := <-bt.events:
+				bt.client.Publish(ae.event)
+				ae.message.Ack()
+			}
 		}
 	}()
 
@@ -190,7 +195,6 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 func (bt *Pubsubbeat) Stop() {
 	bt.client.Close()
 	close(bt.done)
-	close(bt.events)
 }
 
 func createPubsubClient(config *config.Config) (*pubsub.Client, error) {

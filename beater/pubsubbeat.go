@@ -109,17 +109,6 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 	err = bt.subscription.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
 		// This callback is invoked concurrently by multiple goroutines
 		var datetime time.Time
-		eventMap := common.MapStr{
-			"type":         b.Info.Name,
-			"message_id":   m.ID,
-			"publish_time": m.PublishTime,
-			"message":      string(m.Data),
-		}
-
-		if len(m.Attributes) > 0 {
-			eventMap["attributes"] = m.Attributes
-		}
-
 		if m.Attributes["pubsubbeat.compression"] == "gzip" {
 			err = bt.decompress(m)
 			if err != nil {
@@ -127,7 +116,6 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 				m.Nack()
 				return
 			}
-			delete(eventMap, "message")
 		}
 
 		var rawRecords [][]byte
@@ -138,10 +126,19 @@ func (bt *Pubsubbeat) Run(b *beat.Beat) error {
 		}
 
 		var batch []beat.Event
-
 		for _, rawRecord := range rawRecords {
 			if len(rawRecord) == 0 {
 				continue
+			}
+
+			eventMap := common.MapStr{
+				"type":         b.Info.Name,
+				"message_id":   m.ID,
+				"publish_time": m.PublishTime,
+			}
+
+			if len(m.Attributes) > 0 {
+				eventMap["attributes"] = m.Attributes
 			}
 
 			if bt.config.Json.Enabled {
